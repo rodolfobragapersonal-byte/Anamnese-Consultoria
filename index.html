@@ -573,16 +573,53 @@ function b64DecodeUnicode(str){
   return decodeURIComponent(atob(str).split('').map(c=>'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2)).join(''));
 }
 
-function loadEmbedded(){
+/* ---------- COMPRESSAO (reduz bastante o tamanho do link) ---------- */
+function arrayBufferToBase64(buffer){
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  for(let i=0; i<bytes.length; i+=chunk){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary);
+}
+function base64ToArrayBuffer(b64){
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++){ bytes[i] = binary.charCodeAt(i); }
+  return bytes.buffer;
+}
+async function compressToBase64(str){
+  if(!window.CompressionStream) return null;
+  const cs = new CompressionStream('gzip');
+  const writer = cs.writable.getWriter();
+  writer.write(new TextEncoder().encode(str));
+  writer.close();
+  const buf = await new Response(cs.readable).arrayBuffer();
+  return arrayBufferToBase64(buf);
+}
+async function decompressFromBase64(b64){
+  const ds = new DecompressionStream('gzip');
+  const writer = ds.writable.getWriter();
+  writer.write(base64ToArrayBuffer(b64));
+  writer.close();
+  const buf = await new Response(ds.readable).arrayBuffer();
+  return new TextDecoder().decode(buf);
+}
+
+async function loadEmbedded(){
   try{
     const hash = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
-    let raw = null;
+    let raw = null, compressed = false;
     if(hash.startsWith('s=')){
       raw = decodeURIComponent(hash.slice(2));
     }else{
       const params = new URLSearchParams(location.search);
+      const zParam = params.get('z');
       const qParam = params.get('s');
-      if(qParam){
+      if(zParam){
+        raw = zParam; compressed = true;
+      }else if(qParam){
         raw = qParam;
       }else{
         const el = document.getElementById('dataStore');
@@ -592,7 +629,8 @@ function loadEmbedded(){
     }
     if(raw){
       try{
-        const parsed = JSON.parse(b64DecodeUnicode(raw));
+        const jsonStr = compressed ? await decompressFromBase64(raw) : b64DecodeUnicode(raw);
+        const parsed = JSON.parse(jsonStr);
         state = Object.assign(defaultState(), parsed);
         state.anamnese = Object.assign(defaultState().anamnese, parsed.anamnese||{});
         state.treino = Object.assign(defaultState().treino, parsed.treino||{});
@@ -1763,9 +1801,16 @@ async function gerarPDF(){
 document.getElementById('btnGerarPDF').addEventListener('click', gerarPDF);
 
 /* ---------- GERAR LINK (hospedagem própria) ---------- */
-const PUBLIC_BASE_URL = 'https://engbiancamotta-ship-it.github.io/Anamnese-Consultoria/';
-function buildShareUrl(){
-  const payload = b64EncodeUnicode(JSON.stringify(state));
+const PUBLIC_BASE_URL = 'https://rodolfobragapersonal-byte.github.io/Anamnese-Consultoria/';
+async function buildShareUrl(){
+  const json = JSON.stringify(state);
+  try{
+    const compressed = await compressToBase64(json);
+    if(compressed){
+      return PUBLIC_BASE_URL + '?z=' + encodeURIComponent(compressed);
+    }
+  }catch(e){ console.error('Falha ao comprimir, usando link sem compressão', e); }
+  const payload = b64EncodeUnicode(json);
   return PUBLIC_BASE_URL + '?s=' + encodeURIComponent(payload);
 }
 function showLinkFallback(url){
@@ -1781,7 +1826,7 @@ async function gerarLink(){
   collectAnamnese();
   collectTreino();
   state.meta.atualizadoEm = new Date().toISOString();
-  const url = buildShareUrl();
+  const url = await buildShareUrl();
   try{ history.replaceState(null, '', url); }catch(e){}
   try{
     if(navigator.share){
@@ -1855,12 +1900,14 @@ function saveFileDireto(){
 document.getElementById('waClose').addEventListener('click', ()=>{
   document.getElementById('waBanner').style.display='none';
 });
-loadEmbedded();
-loadExerciseLib();
-fillAnamneseForm();
-fillTreinoForm();
-renderDias();
-renderStatusUI();
+(async function init(){
+  await loadEmbedded();
+  loadExerciseLib();
+  fillAnamneseForm();
+  fillTreinoForm();
+  renderDias();
+  renderStatusUI();
+})();
 </script>
 </body>
 </html>
