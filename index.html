@@ -1626,9 +1626,9 @@ function renderStatusUI(){
   anActions.innerHTML='';
   if(editAnamnese){
     anActions.innerHTML = `
-      <button class="btn btn-ghost" id="btnSalvarRascunhoAnamnese">Salvar rascunho (baixar arquivo)</button>
+      <button class="btn btn-ghost" id="btnSalvarRascunhoAnamnese">Salvar rascunho (gerar link)</button>
       <button class="btn btn-primary" id="btnConcluirAnamnese">Concluir anamnese e gerar link para o Rodolfo</button>`;
-    document.getElementById('btnSalvarRascunhoAnamnese').addEventListener('click', saveFileShare);
+    document.getElementById('btnSalvarRascunhoAnamnese').addEventListener('click', gerarLink);
     document.getElementById('btnConcluirAnamnese').addEventListener('click', concluirAnamnese);
   }
 
@@ -1649,13 +1649,13 @@ function renderStatusUI(){
     trActions.innerHTML='';
     if(editTreino){
       trActions.innerHTML = `
-        <button class="btn btn-ghost" id="btnSalvarRascunhoTreino">Salvar rascunho (baixar arquivo)</button>
+        <button class="btn btn-ghost" id="btnSalvarRascunhoTreino">Salvar rascunho (gerar link)</button>
         <button class="btn btn-orange" id="btnConcluirTreino">Concluir plano e gerar link para o cliente</button>`;
-      document.getElementById('btnSalvarRascunhoTreino').addEventListener('click', saveFileDireto);
+      document.getElementById('btnSalvarRascunhoTreino').addEventListener('click', gerarLink);
       document.getElementById('btnConcluirTreino').addEventListener('click', concluirTreino);
     }else{
-      trActions.innerHTML = `<button class="btn btn-ghost" id="btnBaixarCopia">Baixar cópia deste arquivo</button>`;
-      document.getElementById('btnBaixarCopia').addEventListener('click', saveFileDireto);
+      trActions.innerHTML = `<button class="btn btn-ghost" id="btnBaixarCopia">Gerar link desta versão</button>`;
+      document.getElementById('btnBaixarCopia').addEventListener('click', gerarLink);
     }
   }
   applyLock();
