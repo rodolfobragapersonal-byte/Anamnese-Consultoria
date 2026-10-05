@@ -225,9 +225,14 @@
   <button class="wa-close" id="waClose" type="button" title="Fechar aviso">✕</button>
 </div>
 
+<div class="wa-banner" id="cloudLoading" style="display:none; background:#26241F;">
+  <span>⏳</span>
+  <div><b>Abrindo seu treino…</b> só um instante.</div>
+</div>
+
 <div class="wa-banner" id="dataErrorBanner" style="display:none; background:#3B0A0A;">
   <span>⚠️</span>
-  <div>
+  <div id="dataErrorMsg">
     <b>Não consegui carregar os dados deste arquivo.</b> Ele pode ter sido corrompido ao ser transferido (comum em
     alguns apps de mensagem com arquivos grandes). Peça para reenviarem o arquivo original — de preferência salvando-o
     no app <b>Arquivos</b> antes de abrir, em vez de abrir direto na pré-visualização do WhatsApp.
@@ -607,7 +612,97 @@ async function decompressFromBase64(b64){
   return new TextDecoder().decode(buf);
 }
 
+/* ---------- NUVEM (Firestore + criptografia no navegador) ---------- */
+const FIREBASE_API_KEY = 'AIzaSyC-c6mTE0qv57nk27AnFGREc1MTS9bpA-8';
+const FIREBASE_PROJECT_ID = 'personal-rodolfo-braga';
+const FS_BASE = 'https://firestore.googleapis.com/v1/projects/' + FIREBASE_PROJECT_ID + '/databases/(default)/documents/treinos';
+
+function bytesToB64(bytes){
+  let s = ''; const ch = 0x8000;
+  for(let i=0;i<bytes.length;i+=ch){ s += String.fromCharCode.apply(null, bytes.subarray(i, i+ch)); }
+  return btoa(s);
+}
+function b64ToBytes(b64){
+  const bin = atob(b64); const out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function b64urlEncode(bytes){ return bytesToB64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+function b64urlDecode(str){
+  str = str.replace(/-/g,'+').replace(/_/g,'/');
+  while(str.length % 4) str += '=';
+  return b64ToBytes(str);
+}
+async function cloudSave(jsonStr){
+  if(!(window.crypto && crypto.subtle)) throw new Error('WebCrypto indisponível');
+  const keyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, new TextEncoder().encode(jsonStr)));
+  const packed = new Uint8Array(iv.length + ct.length);
+  packed.set(iv, 0); packed.set(ct, iv.length);
+  const res = await fetch(FS_BASE + '?key=' + encodeURIComponent(FIREBASE_API_KEY), {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({fields:{d:{stringValue: bytesToB64(packed)}}})
+  });
+  if(!res.ok) throw new Error('Firestore ' + res.status + ': ' + (await res.text()).slice(0,300));
+  const doc = await res.json();
+  return {id: String(doc.name).split('/').pop(), key: b64urlEncode(keyBytes)};
+}
+async function cloudLoad(id, keyStr){
+  const res = await fetch(FS_BASE + '/' + encodeURIComponent(id) + '?key=' + encodeURIComponent(FIREBASE_API_KEY));
+  if(res.status === 404){ const e = new Error('não encontrado'); e.code = 'notfound'; throw e; }
+  if(!res.ok){ const e = new Error('Firestore ' + res.status); e.code = 'network'; throw e; }
+  const doc = await res.json();
+  const packed = b64ToBytes(doc.fields.d.stringValue);
+  try{
+    const key = await crypto.subtle.importKey('raw', b64urlDecode(keyStr), 'AES-GCM', false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv: packed.slice(0,12)}, key, packed.slice(12));
+    return new TextDecoder().decode(pt);
+  }catch(err){ const e = new Error('chave inválida'); e.code = 'badkey'; throw e; }
+}
+function showDataError(kind){
+  const msgs = {
+    semchave: '<b>O link está incompleto.</b> A parte final do link (depois do <b>#</b>) é a chave que abre o treino, e ela não veio junto. Peça para enviarem o link de novo, copiando por inteiro.',
+    badkey: '<b>A chave deste link não confere.</b> Provavelmente o link foi cortado ou alterado ao ser copiado. Peça para enviarem o link de novo, copiando por inteiro.',
+    notfound: '<b>Não encontrei este treino.</b> O link pode estar errado ou incompleto. Peça para enviarem o link de novo.',
+    network: '<b>Não consegui conectar ao servidor para abrir este treino.</b> Confira sua internet e tente de novo em instantes.'
+  };
+  const el = document.getElementById('dataErrorMsg');
+  if(el && msgs[kind]) el.innerHTML = msgs[kind];
+  const banner = document.getElementById('dataErrorBanner');
+  if(banner) banner.style.display = 'flex';
+}
+function applyParsedState(parsed){
+  state = Object.assign(defaultState(), parsed);
+  state.anamnese = Object.assign(defaultState().anamnese, parsed.anamnese||{});
+  state.treino = Object.assign(defaultState().treino, parsed.treino||{});
+  state.meta = Object.assign(defaultState().meta, parsed.meta||{});
+}
+
 async function loadEmbedded(){
+  const cloudId = new URLSearchParams(location.search).get('i');
+  if(cloudId){
+    const keyStr = location.hash.startsWith('#') ? location.hash.slice(1) : '';
+    if(!keyStr){
+      showDataError('semchave');
+    }else{
+      const loading = document.getElementById('cloudLoading');
+      if(loading) loading.style.display = 'flex';
+      try{
+        const jsonStr = await cloudLoad(cloudId, keyStr);
+        applyParsedState(JSON.parse(jsonStr));
+      }catch(e){
+        console.error('Falha ao abrir treino da nuvem', e);
+        showDataError(e && (e.code==='notfound' || e.code==='badkey') ? e.code : 'network');
+      }
+      if(loading) loading.style.display = 'none';
+    }
+    editAnamnese = state.meta.status==='novo';
+    editTreino = state.meta.status==='anamnese_enviada';
+    return;
+  }
   try{
     const hash = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
     let raw = null, compressed = false;
@@ -1817,8 +1912,15 @@ document.getElementById('btnGerarPDF').addEventListener('click', gerarPDF);
 
 /* ---------- GERAR LINK (hospedagem própria) ---------- */
 const PUBLIC_BASE_URL = 'https://rodolfobragapersonal-byte.github.io/Anamnese-Consultoria/';
+let lastShareMode = 'longo';
 async function buildShareUrl(){
   const json = JSON.stringify(state);
+  try{
+    const saved = await cloudSave(json);
+    lastShareMode = 'nuvem';
+    return PUBLIC_BASE_URL + '?i=' + encodeURIComponent(saved.id) + '#' + saved.key;
+  }catch(e){ console.error('Falha ao salvar na nuvem, usando link longo', e); }
+  lastShareMode = 'longo';
   try{
     const compressed = await compressToBase64(json);
     if(compressed){
@@ -1833,7 +1935,9 @@ function showLinkFallback(url){
   const input = document.getElementById('linkResultInput');
   const hint = document.getElementById('linkResultHint');
   input.value = url;
-  hint.textContent = 'Copie o link acima e envie por WhatsApp, e-mail, etc.';
+  hint.textContent = lastShareMode === 'nuvem'
+    ? 'Link seguro gerado. Copie o link por inteiro (inclusive a parte depois do #) e envie por WhatsApp, e-mail, etc.'
+    : 'Não consegui salvar na nuvem agora (sem internet ou servidor indisponível), então gerei o link longo. Ele funciona, mas é bem maior: copie por inteiro.';
   box.style.display = 'block';
   box.scrollIntoView({behavior:'smooth', block:'center'});
 }
@@ -1841,16 +1945,20 @@ async function gerarLink(){
   collectAnamnese();
   collectTreino();
   state.meta.atualizadoEm = new Date().toISOString();
+  const box = document.getElementById('linkResult');
+  document.getElementById('linkResultInput').value = '';
+  document.getElementById('linkResultHint').textContent = 'Gerando link seguro…';
+  box.style.display = 'block';
   const url = await buildShareUrl();
   try{ history.replaceState(null, '', url); }catch(e){}
   try{
     if(navigator.share){
       await navigator.share({url, title:'Anamnese e plano de treino'});
-      document.getElementById('linkResult').style.display = 'none';
+      box.style.display = 'none';
       return;
     }
   }catch(err){
-    if(err && err.name === 'AbortError') return;
+    if(err && err.name === 'AbortError'){ box.style.display = 'none'; return; }
   }
   showLinkFallback(url);
 }
@@ -1916,6 +2024,7 @@ document.getElementById('waClose').addEventListener('click', ()=>{
   document.getElementById('waBanner').style.display='none';
 });
 (async function init(){
+  if(/^https?:$/.test(location.protocol)){ document.getElementById('waBanner').style.display = 'none'; }
   await loadEmbedded();
   loadExerciseLib();
   fillAnamneseForm();
